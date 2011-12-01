@@ -1,0 +1,169 @@
+#!/usr/bin/perl
+#
+#  <SeqDefs>
+#    Copyright 2002 James Cook - All Rights Reserved.
+#
+#
+
+use strict;
+
+my $defs_source = "SeqDefs.ASM";
+my $notes_source = "SeqNotes.TXT";
+
+my @targets;
+if (scalar @ARGV) {
+	@targets = @ARGV;
+} else {
+	@targets = ("symbol_defs.c", "opcodes.c");
+}
+
+my $tabsize = 4;
+
+my %tables;
+
+my $debug = 0;
+
+my @ignore_argtypes = (
+		"data",
+		"string"
+	);
+
+sub dprint {
+	if ($debug) {
+		return print STDERR @_;	
+	}
+}
+
+sub ParseDefs {
+	my %arrays;
+	my %controlvars;
+	my %opcodes;
+	
+	open DEFS, $defs_source;
+	
+	while (<DEFS>) {
+		if (/^\s*([[:alnum:]]+)@\s+EQU\s+([[:digit:]]+)/) {
+			# Array Def
+			dprint "Array: $1\tValue: $2\n";
+			
+			$arrays{$1} = $2;
+		}
+		
+		if (/^\s*([[:alnum:]]+)\?\s+EQU\s+([[:digit:]]+)/) {
+			# Control Var Def
+			dprint "Control Var: $1\tValue: $2\n";
+			
+			$controlvars{$1} = $2;
+		}
+		
+		if (/^\s*#DEFINE\s+_([[:alnum:]]+)\s+DC.B\s+\$([0-9A-Fa-f]+)/) {
+			# Instr Opcode Def
+			my ($opcode, $val) = (lc $1, hex $2);
+			dprint "Opcode: $opcode\tValue: $val\n";
+			
+			if ($opcode !~ /^nop[[:alnum:]]$/) {
+				$opcodes{$opcode} = $val;
+			}
+		}
+	}
+	
+	close DEFS;
+	
+	$tables{"arrays"} = \%arrays;
+	$tables{"control vars"} = \%controlvars;
+	$tables{"instruction opcodes"} = \%opcodes;
+}
+
+sub ParseNotes {
+	my %argcounts;
+	my %help;
+	
+	open NOTES, $notes_source;
+	
+	while (<NOTES>) {
+		if (m/^[@*]([[:alnum:]]+)\t/g) {
+			my $instr = lc $1;
+			my @args;
+			
+			while (m/\G([[:alnum:]]+),?/g) {
+				push @args, $1;
+			}
+			
+			foreach my $ignore (@ignore_argtypes) {
+				@args = grep {$_ ne $ignore} @args;
+			}
+			
+			dprint "Instr: $instr\tArg Count: " . scalar @args . " (" . join (":", @args) . ")\n";
+			
+			$argcounts{$instr} = scalar @args;
+		}
+		
+		if (/^[@*]([[:alnum:]]+)(.*)$/) {
+			my ($instr, $help) = (lc $1, $2);
+			chomp $help;
+			
+			$help =~ s/\r//g;
+			$help =~ s/(["\\])/\\$1/g;
+			
+			dprint "Instr: $instr\tHelp: \"" . substr($help, 0, 16) . "...\"\n";
+			
+			$help{$instr} = $help;
+		}
+	}
+	
+	close NOTES;
+	
+	$tables{"instruction arg counts"} = \%argcounts;
+	$tables{"instruction help"} = \%help;
+}
+
+sub Print_Table {
+	my ($table_id, $fmt, $table) = @_;
+	my %table = %{ $tables{$table} };
+	
+	print "symbol_init $table_id\[] = {\n";
+	
+	foreach my $item (sort keys %table) {
+		printf "\t\t{\%-15s %4s},\n", qq/"$item",/, sprintf ($fmt, $table{$item});
+	}
+	
+	print "\t\t{NULL, 0xff}\n";
+	print "\t};\n";
+}
+
+sub perlpp {
+	my ($src, $dst) = @_;
+	
+	open STDIN, $src;
+	open STDOUT, ">", $dst;
+	
+	while (<STDIN>) {
+		if (/^\s*#perl\s(.*)$/i) {
+			eval $1;
+		} else {
+			print;
+		}
+	}
+}
+
+ParseDefs;
+ParseNotes;
+
+
+foreach my $file (@targets) {
+	perlpp("$file.template", $file);
+}
+
+exit 0;
+
+Print_Table("Array_Ids", "0x%02x", "arrays");
+  print "\n";
+# Print_Table("Array_Sizes", "array sizes");
+#  print "\n";
+Print_Table("Control_Vars", "0x%02x", "control vars");
+  print "\n";
+Print_Table("Opcodes", "0x%02x", "instruction opcodes");
+  print "\n";
+Print_Table("Opcode_Help", q/(unsigned) "%s"/, "instruction help");
+  print "\n";
+Print_Table("ArgCounts", "%d", "instruction arg counts");

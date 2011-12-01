@@ -1,0 +1,643 @@
+------------------------------------
+vTree Sequencer Implementation Notes
+------------------------------------
+Revised: 02-Jan-05
+
+New variables required by the sequencer
+---------------------------------------
+
+Variable/register space		96+16	* Variables
+Call/return stack		16	(shared with variable space)
+
+Parameter values (3)		8	* Arg1,Arg2,Arg3
+Parameter pointers (3)		8	* Arg1Ptr,Arg2Ptr,Arg3Ptr
+Parameter status/control (3)	2	* Arg1Ctrl,Arg2Ctrl,Arg3Ctrl
+
+Stack pointer			1	* SeqStkPtr
+Stack pointer underflow limit	1	* SeqStkLim
+Program start address		2	* SeqStart
+Program end address		2	* SeqEnd
+Program counter			2	* SeqPC
+
+Control/status register		1	* SeqCtrl
+
+===============================================================================
+
+Sequencer instruction encoding
+------------------------------
+
+<Opcode> [<ParamSequence> [..]]
+
+<Opcode>	8 bit operation code
+<ParamSequence>	1..3 byte sequence that identifies the source and size of the
+		parameter to be used.  The number of <ParamSequence>s in an
+		instruction is dependent on the nature of the instruction.
+		Most instructions require 1, 2 or 3 <ParamSequence>s.
+
+
+Parameter types and encoding
+----------------------------
+
+Description				Size	Encoding
+--------------------------------------	------	---------------------------
+
+Short constant				4/byte	0000kkkk
+Medium constant				12/wrd	0001jjjj kkkkkkkk
+Byte constant				8/byte	00100000 kkkkkkkk
+Word constant				16/wrd	00100001 jjjjjjjj kkkkkkkk
+
+(reserved)					00100010 - 00111111
+
+Short register reference		8/byte	0100rrrr
+Short register reference		16/wrd	0101rrrr
+
+Long register reference			8/byte	01100000 rrrrrrrr
+Long register reference			16/wrd	01100001 rrrrrrrr
+
+(reserved)					01100010 - 01101111
+
+Indirect register reference		8/byte	0111rrrr
+  using short index register reference
+Indirect register reference		16/wrd	1000rrrr
+  using short index register reference
+Indirect register reference		8/byte	10010000 rrrrrrrr
+  using long index register reference
+Indirect register reference		16/wrd	10010001 rrrrrrrr
+  using long index register reference
+
+(reserved)					10010010 - 10011111
+
+Array with constant index (4-bit)	8/byte	1010iiii aaaaaaaa
+
+Array indexed by register (short ref)	8/byte	1011rrrr aaaaaaaa
+
+Array indexed by register (long ref)	8/byte	11000000 rrrrrrrr aaaaaaaa
+
+Control variable access			varies	11000001 iiiiiiii
+
+Read byte from file			8/byte	11000010
+Read word from file			16/wrd	11000011
+Read/Write byte to file			8/byte	11000100
+Read/Write word to file			16/wrd	11000101
+Write byte to file			8/byte	11000110
+Write word to file			16/wrd	11000111
+
+(reserved)					11001000 - 11101111
+
+RAM access w/constant short address	8/byte	11110000 llllllll
+RAM access w/constant short address	16/wrd	11110001 llllllll
+RAM access w/constant long address	8/byte	11110010 hhhhhhhh llllllll
+RAM access w/constant long address	16/wrd	11110011 hhhhhhhh llllllll
+RAM access indexed by register		8/byte	11110100 rrrrrrrr
+RAM access indexed by register		16/wrd	11110101 rrrrrrrr
+
+Program memory access w/constant addr	8/byte	11110110 hhhhhhhh llllllll
+Program memory access w/constant addr	16/wrd	11110111 hhhhhhhh llllllll
+Program memory access indexed by reg.	8/byte	11111000 rrrrrrrr
+Program memory access indexed by reg.	16/wrd	11111001 rrrrrrrr
+
+EEPROM access w/constant long address	8/byte	11111010 hhhhhhhh llllllll
+EEPROM access w/constant long address	16/wrd	11111011 hhhhhhhh llllllll
+EEPROM access indexed by register	8/byte	11111100 rrrrrrrr
+EEPROM access indexed by register	16/wrd	11111101 rrrrrrrr
+(reserved)					11111110
+(reserved)					11111111
+
+
+Letter bit codes:
+
+a = Array ID
+r = Register ID
+i = Array (or control variable) index
+h = Memory address MSB
+l = Memory address LSB
+j = Constant MSB
+k = Constant LSB
+
+Indirection using registers always interprets the register used as a 8-bit
+(byte) value, except in the case of the RAM- or EEPROM-accessing operator
+(param type byte = $Fx) in which the register specified is interpreted as a
+word-sized memory address.
+
+===============================================================================
+
+Sequencer instruction set
+
+Note: Do not remove "@" prefix fron instructions, this is needed by the parser
+that builds the instruction help file (opcodes.c) used by the 'quence'
+assembler.
+
+Load / store
+
+@MOVE	a,b			a = b
+@XCHA	a,b			a <-> b
+@XCHN	a			Swap low and high nibbles of [a]
+@XCHB	a			Swap low and high bytes of [a]
+@ZERO	a			a = 0
+
+
+Arithmetic and logical operations
+
+@ADD	dest,src		dest = dest + src
+				ByteCF=1 if carry from LSB to MSB
+				WordCF=1 if MSB overflow
+@SUB	dest,src		dest = dest - src
+				ByteCF=1 if borrow from MSB to LSB
+				WordCF=1 if MSB underflow
+
+@INC	dest			dest = dest + 1, BC & WC updated as if add +1
+@INCBC	dest			dest = dest + 1 if byte carry set, BC/WC upd.
+@INCWC	dest			dest = dest + 1 if word carry set, BC/WC upd.
+@DEC	dest			dest = dest - 1, BC & WC updated as if sub -1
+@DECBC	dest			dest = dest - 1 if byte carry set, BC/WC upd.
+@DECWC	dest			dest = dest - 1 if word carry set, BC/WC upd.
+
+@MUL	a,b			Reg[0..3] = a * b
+@DIV16	a,b,c			16/8 divide: a = a / b, remainder in c
+				<b> and <c> are byte values
+@DIV32	a,b			32/16 divide:
+				Reg[0..3] = Reg[0..3] / a, remainder in b
+
+@RAND	dest,range		dest = random # 0..(range-1)
+
+@INV	dest			dest = dest ^ FFFFh
+@CPL2	dest			dest = - dest (2's complement)
+
+@AND	dest,src		dest = dest & src
+@OR	dest,src		dest = dest | src
+@XOR	dest,src		dest = dest ^ src
+@ANDOR	dest,asrc,osrc		dest = dest & asrc | osrc
+
+@SHL	dest			dest = dest shift left, shift in 0
+@SHLBC	dest			dest = dest shift left, shift in byte CF
+@SHLWC	dest			dest = dest shift left, shift in word CF
+@SHR	dest			dest = dest shift right, shift in 0
+@SHRBC	dest			dest = dest shift right, shift in byte CF
+@SHRWC	dest			dest = dest shift right, shift in word CF
+
+	Note: all shift operations update ByteCF and WordCF based on bits
+	shifted out of the LSB and MSB of the <dest> operand.
+
+
+Mask / array / block operations
+
+@MMOVE	darray,val,mask		darray[0..7] = val, based on [mask]
+@AMOVE	darray,sarray,count	darray[0..count-1] = sarray[0..count-1]
+@ALOAD	darray,count,data	darray[0..count-1] = data[0..count-1]
+
+@MADD	darray,val,mask		darray[0..7] += val, using [mask]
+@MSUB	darray,val,mask		darray[0..7] -= val, using [mask]
+@MINC	darray,mask		darray[0..7] += 1, using [nask]
+@MDEC	darray,mask		darray[0..7] -= 1, using [mask]
+
+@MAND	darray,val,mask		darray[0..7] &= val, using [mask]
+@MOR	darray,val,mask		darray[0..7] |= val, using [mask]
+@MXOR	darray,val,mask		darray[0..7] ^= val, using [mask]
+@MANDOR	darray,val,mask		darray[0..7] = darray[0..7] & val[msb] |
+				val[lsb], using [mask]
+
+Flow control
+
+@JLT	a,b,addr		Jump to [addr] if a < b
+@JLE	a,b,addr		Jump to [addr] if a <= b
+@JEQ	a,b,addr		Jump to [addr] if a = b
+@JNE	a,b,addr		Jump to [addr] if a <> b
+@JGE	a,b,addr		Jump to [addr] if a >= b
+@JGT	a,b,addr		Jump to [addr] if a > b
+
+@JZ	a,addr			Jump to [addr] if a = 0
+@JNZ	a,addr			Jump to [addr] if a <> 0
+
+@JBCS	addr			Jump to [addr] if byte carry set
+@JBCC	addr			Jump to [addr] if byte carry clear
+@JWCS	addr			Jump to [addr] if word carry set
+@JWCC	addr			Jump to [addr] if word carry clear
+@JEOF	addr			Jump to [addr] if at end-of-file
+@JNEOF	addr			Jump to [addr] if not at end-of-file
+
+@JMP	addr			Unconditional jump to [addr]
+
+@DJNZ	dest,addr		dest = dest - 1, Jump to [addr] if dest <> 0
+@IJLE	dest,val,addr		dest = dest + 1, Jump to [addr] if dest <= val
+
+@JBS	a,b,addr		Jump to [addr] if (a & b) <> 0
+@JABS	a,b,addr		Jump to [addr] if (a & b) = b
+@JBC	a,b,addr		Jump to [addr] if (a & b) <> b
+@JABC	a,b,addr		Jump to [addr] if (a & b) = 0
+
+@CALL	addr			Call subroutine
+@RET				Return from subroutine
+
+
+Stack operations
+
+@PUSH	val			Stack <- val, SP = SP - sizeof(val)
+@POP	dest			SP = SP + sizeof(dest), dest <- Stack
+@RSP				Reset stack pointer (to end of reg array)
+
+
+Input/output
+
+@INP	d,devmask		d = byte/word from specified device(s)
+@INPS	d			d = byte/word from serial port
+@INPU	d			d = byte/word from USB port
+
+@OUT	d,devmask		Write byte/word [d] to specified device(s)
+@OUTS	d			Write byte/word [d] to serial port
+@OUTU	d			Write byte/word [d] to USB port
+@OUTD	d			Write byte/word [d] to LED display
+
+@AINP	d.cnt,devmask		d[0..l-1] = data from specified device(s)
+@AINPS	d,cnt			d[0..l-1] = data from serial port
+@AINPU	d,cnt			d[0..l-1] = data from USB port
+
+@AOUT	d,cnt,devmask		Send d[0..cnt-1] to specified device(s)
+@AOUTS	d,cnt			Send d[0..cnt-1] to serial port
+@AOUTU	d,cnt			Send d[0..cnt-1] to USB port
+@AOUTD	d,cnt			Send d[0..cnt-1] to LED display
+
+@DOUT	n,fmt,devmask		Decimal output [n] to specified device(s)
+@DOUTS	n,fmt			Decimal output [n] to serial port
+@DOUTU	n,fmt			Decimal output [n] to USB port
+@DOUTD	n,fmt			Decimal output [n] to LED display
+
+@HOUT	n,fmt,devmask		Hex output [n] to specified device(s)
+@HOUTS	n,fmt			Hex output [n] to serial port
+@HOUTU	n,fmt			Hex output [n] to USB port
+@HOUTD	n,fmt			Hex output [n] to LED display
+
+@SOUT	len,devmask,string	Write string to specified device(s)
+@SOUTS	len,string		Write string to serial port
+@SOUTU	len,string		Write string to USB port
+@SOUTD	len,string		Write string to LED display
+
+@SPOUT	len,strptr,devmask	Write string at <strptr> to specified device(s)
+@SPOUTS	len,strptr		Write string at <strptr> to serial port
+@SPOUTU	len,strptr		Write string at <strptr> to USB port
+@SPOUTD	len,strptr		Write string at <strptr> to LED display
+
+@INPUT	d,len			Line input into <d>, <cnt> chars max.
+
+
+File operations
+
+@RUN	filename		Run sequencer program "filename"
+@RUNP	nameptr			Run sequencer program using name pointed to
+				 by <nameptr>
+@RUND	dirptr			Run sequencer program using file information
+				 in directory entry stored at <diraddr>
+@RUNM	start,end		Run sequencer program in CPU memory space
+				 starting at addr <start> and ending at <end>-1
+@OPEN	type,filename		Open file "filename" that matches <type>
+@OPENP	type,nameptr		Open file using name pointed to by <nameptr>
+				 that matches <type>.
+@OPEND	diraddr			Open a file using file information in directory
+				 entry stored at <diraddr>
+@CLOSE				Close file
+@SEEK	pos			Move file r/w pointer
+
+
+Control & misc
+
+@NOP				No operation
+
+@ATOI	dest,array		Convert <array> to integer and store in <dest>
+
+@WAIT	time			Wait for (time * 10) milliseconds
+@LWAIT	time			Wait for [time] line cycles
+
+@SETBC				Set byte carry
+@SETWC				Set word carry
+@CLRBC				Clear byte carry
+@CLRWC				Clear word carry
+
+@INIT				Initialize entire register array to 0
+				(except for first 16 bytes)
+
+@LEA	dest,target		Load Effective Address: <dest> gets the
+				address where <target> is stored in memory
+				(RAM or EEPROM, depending <target> arg type).
+				If <target> is a constant, <dest> is
+				undefined.
+@SIZE	dest,obj		dest = sizeof(obj)
+
+@AMAG	mode			Start/stop MAG auto mode
+@MSTEP				Step the MAG manually
+@RESET				Reset all controls to defaults
+
+@BAUD	rate			Set serial port baud rate & initialize
+
+@MCALL	addr,a_cc,x_y		Call machine language subroutine
+
+@BREAK				Generate break fault
+@END				Stop execution
+@ENDOS				Run operating system program, or stop
+
+===============================================================================
+
+Array variable definitions
+
+Array name	Idx/Sz	Description
+--------------	------	------------------------------------------------------
+Intensity	0  [8]	Direct light intensity control
+TransCtrl	1  [8]	Translation controls (bitmap)
+MAGCtrl		2  [8]	MAG channel controls (bitmap)
+MAGCount	3  [8]	MAG counters
+MAGPreCnt	4  [8]	MAG prescaler counters
+MAGClkDiv	5  [8]	MAG clock divisors
+MAGStep		6  [8]	MAG counter increment size (step rate)
+MAGBound1	7  [8]	MAG count boundary 1 (low)
+MAGBound2	8  [8]	MAG count boundary 2 (high)
+Gain		9  [4]  MAG count-to-intensity multipliers (gain controls)
+AnalogIn	10 [4]	Analog-to-digital input levels
+UsrTmrCnt	11 [8]	User timer counters
+UsrTmrLim	12 [8]	User timer count limits
+Display		13 [4]	Front panel display segment code buffer
+FixTmrCnt	14 [8]	Fixed timer counters
+Buffer1		15 [16]	General purpose buffer #1: Numeric conversion buffer
+Buffer2		16 [8]	General purpose buffer #2: USB endpoint 2 receive
+Buffer3		17 [8]	General purpose buffer #3: USB endpoint 2 transmit
+Register	18 [16]	First 16 (byte) data registers
+
+Notes:
+
+- Write operations to the FixTmrCnt array should be avoided, as this may
+  disturb internal timing operations.
+- Direct manipulation of the front panel display (at the segment control
+  level) may be achieved by writing the desired segment pattern(s) into
+  DisplayBuf followed by execution of the DREF operation.
+- The first 16 general purpose registers may be manipulated using array
+  operations by referencing the <Register> array.
+- Buffer1 is used internally for integer-to-ASCII number conversion and string
+  manipulation.  It can be used (carefully) to hold temporary data as long as
+  one avoids performing operations requiring numeric data output.
+- Buffer2 is the USB endpoint #2 receive buffer.  At present, endpoint 2 is
+  not used by the USB subsystem, so this buffer is available for user data.
+- Buffer3 is the USB endpoint #2 transmit buffer.  See note for Buffer2 above.
+
+
+Control variable definitions
+
+Variable name	Idx/Sz	Description
+--------------	------  ------------------------------------------------------
+MAGGCtrl	0 / B	MAG global controls (bitmapped)
+MAGSteps	1 / W	MAG global step (clock) limit counter ($FFFF=no limit)
+DigitalON	2 / B	Digital transform ON threshold
+TimeToggle	3 / B	Fixed timer toggle bits (bitmapped)
+TimeFlag	4 / B	Fixed timer terminal count flags (bitmapped)
+UsrTmrFlg	5 / B	User timer terminal count flags (bitmapped)
+RandSeed	6 / W	Random number seed
+I2CError	7 / B	I2C bus error flags
+ACPeriod	8 / W	AC line period in 2uS units
+LineStat	9 / B	AC line and PLL status (bitmapped)
+SCICtrl		10 / B	SCI (serial port) control (bitmapped); handshaking
+USBStat		11 / B	USB status (bitmapped); configuration state
+ConSCICtrl	12 / B  SCI "console" (high level) controls (bitmapped)
+ConUSBCtrl	13 / B	USB "console" (high level) controls (bitmapped)
+EEStat		14 / B	EEPROM status; # of EEPROMs installed (bitmapped)
+Inhibits	15 / B	Control inhibits (bitmapped), modify at your own risk
+DispCtrl	16 / B	Front panel display control & status (bitmapped)
+DispIndex	17 / B	Front panel display output index; "cursor position"
+FileStart	18 / W	Current/last open file start address in EEPROM
+FileEnd		19 / W	Current/last open file end address in EEPROM
+FilePos		20 / W	Current read/write position in file (abs. address)
+FileDirPtr	21 / W	Pointer to directory record of current/last open file
+SeqCtrl		22 / B	Sequencer control and status; PSW equivalent
+SeqPC		23 / W	Sequencer program counter; opcode fetch position
+SeqSP		24 / B	Sequencer stack pointer
+SeqSPLim	25 / B	Sequencer stack pointer lower (underflow) limit
+SeqStart	26 / W	Start address of currently executing sequencer program
+SeqEnd		27 / W	End address of currently executing sequencer program
+ExecPC		28 / W	Points to opcode being executed in program mem. space
+InstrCnt	29 / W  Counts number of instructions executed since start
+IOCount		30 / B	Sequencer I/O byte counter; incremented after each
+			successful byte input or output operation
+SeqIOCnt	31 / B	Sequencer I/O timeout counter (100mS units)
+SeqIOLim	32 / B	Sequencer I/O timeout limit (100mS units)
+Seconds		33 / W  General-purpose 16-bit seconds counter
+Clock		34 / W	Time-of-day clock, hours (MSB) and minutes (LSB)
+ClockSec	35 / B	Time-of-day clock, seconds
+
+===============================================================================
+
+Sequencer assembler syntax notes:
+
+General format for sequencer source lines:
+
+[Label[:]]	Operation	[Arg[,Arg[,Arg]]]	;Comment
+
+- Labels/symbols always start in column 1.
+
+- Operation mnemonics must always be preceeded by at least one whitespace
+  character.
+
+- Comments are prefixed by a semicolon ";" and may appear in any place in
+  the source.
+
+- Blank lines are ignored (treated as comments)
+
+- Whitespace characters: TAB (^I/$09) and SPACE ($20)
+
+- Listings produced by the assembler should expand tabs to spaces, or format
+  the listing such that labels, mnemonics, arguments and end-of-line columns
+  are aligned.  See note on tabs below.
+
+- The assembler should provide a pseudo-op that defines horizontal "tab stops"
+  e.g. TAB 11,21,41 would be interpreted as: First tab starts at column 11,
+  second at column 21, third at column 41.  Default tabstops are 9,17,25,33,
+  etc. (8 columns per tab).
+
+- Idea: Allow use of C-style "//" end-of-line comment and "/* */" block
+  comments. (optional)
+
+
+Representation of numeric constants:
+
+Base	Prefix	Suffix	Examples
+------	------	------	-----------------------------------------
+Bin/2	%	b	%10110  110001b  %00000000  01010011b
+Oct/8	\	o	\077  134o  \12  5o
+Dec/10	none	d/none	123  592d  0d  8
+Hex/16	$	h	0FABEh  $ACED  12Ah  $88  $c9ae
+Char	'	none	'a'  'Z'  '\n'  'WD'
+
+- Implementation of octal constants is not really necessary, I've included
+  it here for the sake of legacy and completeness,
+
+- For character constants, if C-style "character escape sequences" are
+  supported, they should follow C conventions (e.g. \n = 0A, \r = 0D,
+  \b = 07, etc.)
+
+- A character constant may be 1 or 2 characters long, representing a byte
+  or word value, respectively.
+
+- Hex constants expressed using suffix notation (e.g. 0BADh) require a leading
+  zero IF the first digit is a letter (A-F).  Otherwise, the entity will be
+  interpreted as a label.
+
+
+Expressions:
+
+- The assembler should support expressions containing constant and/or symbolic
+  operands; e.g. MyReg+1, 7*(MyConst+8)
+
+- Ideally, the assembler should employ proper algebraic precedence of
+  operations when evaluating an expression; e.g. 11+4*3 = 11 + (4 * 3) = 23,
+  not (11 + 4) * 2 = 30.
+
+- Parenthesis can be used to alter precedence of operations.
+
+
+Operators:
+
+Op	Prec	Description
+------	------	--------------------------------------------------------------
++	2	Addition
+-	2	Subtraction
+/	3	Integer division
+*	3	Multiplication
+%	3	Modulo
+
+AND	3	Bitwise AND
+&	3	Synonym for AND
+OR	3	Bitwise OR
+|	3	Synonym for OR
+XOR	3	Bitwise exclusive OR
+^	3	Synonym for XOR
+WNOT	3	Word inversion; WNOT $0048 = $FFB7, WNOT $AC48 = $53B7
+BNOT	3	Byte inversion; BNOT $0048 = $00B7, BNOT $AC48 = $ACB7
+
+SHL	3	Shift left; e.g. 8 SHL 2 = 32
+SHR	3	Shift right; e.g. 32 SHR 2 = 8
+
+LOW	4	Least significant byte of right operand; e.g. LOW $1234 = $34
+HIGH	4	Most significant byte of right operand; e.g. HIGH $1234 = $12
+
+<	1	Less than; returns 1 if left < right, 0 otherwise
+<=	1	Less or equal; returns 1 if left <= right, 0 otherwise
+= ==	1	Equal to; returns 1 if left = right, 0 otherwise
+<> !=	1	Not equal; returns 1 if left <> right, 0 otherwise
+>=	1	Greater or equal; returns 1 if left >= right, 0 otherwise
+>	1	Greater than; returns 1 if left > right, 0 otherwise
+
+( )	5	Used to enclose subexpressions to change precedence
+
+?	-	Not really an operator, this symbol is used as an operand
+		to represent the assembler's current location counter.
+
+The operators shown above, along with suggested precedence, are suggestions
+only.  If it is easier, for example, to implement C-standard operators and
+precedence, then the C style should be chosen over what is suggested here.
+
+
+Syntax for representing different addressing modes:
+
+
+Constant (auto)					#expr
+Constant (short/4-bit)				#(expr).s
+Constant (medium/12-bit)			#(expr).m
+Constant (long/16-bit)				#(expr).l
+
+Byte register reference (auto)			(expr).b
+Word register reference (auto)			(expr).w
+Byte register reference (short)			(expr).sb
+Word register reference (long)			(expr).lb
+Byte register reference (short)			(expr).sw
+Word register reference (long)			(expr).lw
+
+Byte indirect register reference (auto)		[(expr).b]
+Word indirect register reference (auto)		[(expr).w]
+Byte indirect register reference (short)	[(expr).sb]
+Word indirect register reference (short)	[(expr).sw]
+Byte indirect register reference (long)		[(expr).lb]
+Word indirect register reference (long)		[(expr).lw]
+
+Array w/constant index				expr[#index]
+Array w/register index (auto)			expr[indexreg]
+Array w/register index (short)			expr[(indexreg).s]
+Array w/register index (long)			expr[(indexreg).l]
+
+Control variable access				$varid
+
+Byte file read-only				~br
+Word file read-only				~wr
+Byte file write-only				~bw
+Word file write-only				~ww
+Byte file read/write				~brw
+Word file read/write				~wrw
+
+Byte RAM w/constant address (auto)		{R:#(expr).b}
+Word RAM w/constant address (auto)		{R:#(expr).w}
+Byte RAM w/constant address (short)		{R:#(expr).sb}
+Word RAM w/constant address (short)		{R:#(expr).sw}
+Byte RAM w/constant address (long)		{R:#(expr).lb}
+Word RAM w/constant address (long)		{R:#(expr).lw}
+Byte RAM w/addr specified by word register	{R:[indexreg].b}
+Word RAM w/addr specified by word register	{R:[indexreg].w}
+
+Byte EEPROM w/constant address			{E:#expr.b}
+Word EEPROM w/constant address			{E:#expr.w}
+Byte EEPROM w/addr specified by word register	{E:[indexreg].b}
+Word EEPROM w/addr specified by word register	{E:[indexreg].w}
+
+Byte in program memory space (constant addr)	{P:#(expr).b}
+Word in program memory space (constant addr)	{P:#(expr).w}
+Byte in program memory space (word reg idx)	{P:[indexreg].b}
+Word in program memory space (word reg idx)	{P:[indexreg].w}
+
+- The parenthesis shown around entities such as "expr" and "indexreg" are
+  necessary only if the entity is a full arithmetic expression, such as :
+  (MyReg+4).lb , (MyReg*2+5).sw
+  In cases where the register number or label stands by itself, the
+  parenthesis should not be necessary, as in:  MyReg.b , 13.s
+  Ideally (if it does not complicate expression parsing), the parenthesis
+  should be entirely optional; expressions such as "MyLabel*2+5.sw" would
+  be valid.  The period character has been intentionally NOT used as an
+  arithmetic operator or valid label character for this reason.
+
+- Suffixes used to force a given addressing mode (the letter(s) after the
+  period) or the key letters used in file access modes should be interpreted
+  case-insensitive; ".sb" and ".SB" are equivalent, as are "~brw" and "~BRW".
+
+- The "s", "m" and "l" qualifiers for constants (and other invariant data,
+  such as register ID's and memory addresses) are optional.  When omitted,
+  the assembler should attempt to determine the most efficient addressing
+  mode to use based on the value of the constant.
+
+- If the "b" or "w" qualifier for operand size is omitted, the assembler
+  should encode the operand as a byte access.
+
+- The "r" and/or "w" qualifier chars for file I/O may be omitted, in which case
+  the file I/O mode should default to read/write.  If the "b" or "w" qualifier
+  is omitted, a byte access is assumed.  Qualifier characters for file
+  operations (and, for that matter, for other operations) should be able to
+  be listed in any order.
+
+- If the qualifier for memory operations (e.g. R:, E:, P:) is omitted,
+  a CPU RAM access is assumed.
+
+- The syntax for specifying addressing modes is presented as something that
+  should be able to be parsed unambiguously.  Changes to this syntax, or
+  a completely different syntax, may be selected by the designer if it
+  eases implementation and/or improves consistency and readability.
+
+
+Other misc. notes:
+
+- Valid chars for labels: a-z,A-Z,0-9,_
+
+- Label length limit: 32 chars, or whatever is practical
+
+- Labels are case-sensitive (see note further down on case-sensitive switch)
+
+- Forward label references should be allowed.
+
+- Labels represent 8- or 16-bit quantities.  However, internal math for
+  expression evaluation should employ 32 bit precision so intermediate
+  operations that result in >16 bit values do not result in errors or
+  unexpected results.
+
+- The assembler should provide a command line switch and/or internal directive
+  to enable or disable case-sensitivity of labels.  This option would apply
+  to labels only, as all other elements (mnemonics, operators, addressing mode
+  prefixes and suffixes, etc.) should always be case-insensitive.
